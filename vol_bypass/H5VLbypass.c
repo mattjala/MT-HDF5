@@ -1482,17 +1482,12 @@ dset_open_helper(void *obj, const char *name, H5VL_bypass_t *dset, hid_t dxpl_id
     /* The HDF5 library adds a '/' in front of the dataset name (full pathname).
      * Make sure the dataset name has it. */
     // TBD
-    /*
     if (name) {
         if (name[0] != '/')
             sprintf(dset_stuff[dset_count].dset_name, "/%s", name);
         else
             strcpy(dset_stuff[dset_count].dset_name, name);
     }
-    */
-   if (name) {
-    strcpy(dset_stuff[dset_count].dset_name, name);
-   }
 
     /* Get the file name of the dataset */
     if (get_filename_helper(dset, file_name, H5I_DATASET, req) < 0) {
@@ -1652,7 +1647,7 @@ H5VL_bypass_dataset_open(void *obj, const H5VL_loc_params_t *loc_params, const c
          * store just the name or the full path from root.
          * With the current setup, it seems likely that multiple open requests to the same dataset from different
          * paths would not be recognized as the same dataset. */
-        if (!strcmp(dset_stuff[i].dset_name, name)) {
+        if (!strcmp(dset_stuff[i].dset_name, name) || !strcmp(dset_stuff[i].dset_name + 1, name)) {
             dset_stuff[i].ref_count++;
 
             goto done;
@@ -2634,7 +2629,8 @@ H5VL_bypass_dataset_read(size_t count, void *dset[], hid_t mem_type_id[], hid_t 
 
         /* Find the dataset's info using its name */
         for (i = 0; i < dset_count; i++) {
-            if (!strcmp(dset_stuff[i].dset_name, dset_name)) {
+            /* TBD: Leading slash management */
+            if (!strcmp(dset_stuff[i].dset_name, dset_name) || !strcmp(dset_stuff[i].dset_name + 1, dset_name)) {
                 strcpy(file_name, dset_stuff[i].file_name);
                 dcpl_id       = dset_stuff[i].dcpl_id;
                 dset_layout   = dset_stuff[i].layout;
@@ -3032,10 +3028,12 @@ static herr_t
 H5VL_bypass_dataset_close(void *dset, hid_t dxpl_id, void **req)
 {
     H5VL_bypass_t *o = (H5VL_bypass_t *)dset;
-    char           dset_name[1024];
+    char           dset_name[BYPASS_NAME_SIZE_LONG];
     unsigned       i;
-    herr_t         ret_value;
+    herr_t         ret_value = 0;
 
+    memset(dset_name, 0, BYPASS_NAME_SIZE_LONG);
+    
 #ifdef ENABLE_BYPASS_LOGGING
     printf("------- BYPASS  VOL DATASET Close\n");
 #endif
@@ -3052,7 +3050,7 @@ H5VL_bypass_dataset_close(void *dset, hid_t dxpl_id, void **req)
     for (i = 0; i < dset_count; i++) {
         /* Skip leading slash in stored dset name */
         /* TBD: See note in dataset open about dataset name storage */
-        if (!strcmp(dset_stuff[i].dset_name, dset_name)) {
+        if (!strcmp(dset_stuff[i].dset_name, dset_name) || !strcmp(dset_stuff[i].dset_name + 1, dset_name)) {
             dset_stuff[i].ref_count--;
 
             if (dset_stuff[i].ref_count == 0)
