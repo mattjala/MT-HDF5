@@ -1624,7 +1624,13 @@ H5VL_bypass_dataset_open(void *obj, const H5VL_loc_params_t *loc_params, const c
     /* If the dataset has already been opened, only increment the reference count of this dataset and finish
      */
     for (i = 0; i < dset_count; i++) {
-        if (!strcmp(dset_stuff[i].dset_name, name)) {
+        /* Stored dataset names have a leading '/', so skip that in this comparison */
+        /* TBD: The dataset info table seems to store the dataset name provided, not the full path from file root.
+         * If that's the case, it doesn't make sense to store a leading slash - it should consistently 
+         * store just the name or the full path from root.
+         * With the current setup, it seems likely that multiple open requests to the same dataset from different
+         * paths would not be recognized as the same dataset. */
+        if (!strcmp(dset_stuff[i].dset_name + 1, name)) {
             dset_stuff[i].ref_count++;
 
             goto done;
@@ -2924,19 +2930,32 @@ H5VL_bypass_dataset_optional(void *obj, H5VL_optional_args_t *args, hid_t dxpl_i
     return ret_value;
 } /* end H5VL_bypass_dataset_optional() */
 
-static void
+static herr_t
 remove_dset_info_helper(unsigned index)
 {
+    herr_t ret_value = 0;
     unsigned i;
 
     /* First, close the IDs related to the dataset */
-    H5Pclose(dset_stuff[index].dcpl_id);
+    if (H5Pclose(dset_stuff[index].dcpl_id) < 0) {
+        fprintf(stderr, "failed to close DCPL\n");
+        ret_value = -1;
+    }
+
     dset_stuff[index].dcpl_id = H5I_INVALID_HID;
 
-    H5Tclose(dset_stuff[index].dtype_id);
+    if (H5Tclose(dset_stuff[index].dtype_id) < 0) {
+        fprintf(stderr, "failed to close dtype\n");
+        ret_value = -1;
+    }
+
     dset_stuff[index].dtype_id = H5I_INVALID_HID;
 
-    H5Sclose(dset_stuff[index].space_id);
+    if (H5Sclose(dset_stuff[index].space_id) < 0) {
+        fprintf(stderr, "failed to close dataspace\n");
+        ret_value = -1;
+    }
+
     dset_stuff[index].space_id = H5I_INVALID_HID;
 
     dset_stuff[index].use_native = false;
@@ -2960,6 +2979,8 @@ remove_dset_info_helper(unsigned index)
     }
 
     dset_count--;
+
+    return ret_value;
 }
 
 /*-------------------------------------------------------------------------
@@ -2985,20 +3006,34 @@ H5VL_bypass_dataset_close(void *dset, hid_t dxpl_id, void **req)
 #endif
 
     /* Retrieve the dataset's name */
-    get_dset_name_helper(o, dset_name, req);
+    if (get_dset_name_helper(o, dset_name, req) < 0) {
+        fprintf(stderr, "unable to get dataset name during dataset close\n");
+        ret_value = -1;
+        goto done;
+    }
 
     /* Decrement the reference count.  Remove the dataset structure from the list when the reference count
      * drops to zero */
     for (i = 0; i < dset_count; i++) {
-        if (!strcmp(dset_stuff[i].dset_name, dset_name)) {
+        /* Skip leading slash in stored dset name */
+        /* TBD: See note in dataset open about dataset name storage */
+        if (!strcmp(dset_stuff[i].dset_name + 1, dset_name)) {
             dset_stuff[i].ref_count--;
 
-            if (!dset_stuff[i].ref_count)
-                remove_dset_info_helper(i);
+            if (dset_stuff[i].ref_count == 0)
+                if (remove_dset_info_helper(i) < 0) {
+                    fprintf(stderr, "failed to remove dataset info\n");
+                    ret_value = -1;
+                    goto done;
+                }
         }
     }
 
-    ret_value = H5VLdataset_close(o->under_object, o->under_vol_id, dxpl_id, req);
+    if (H5VLdataset_close(o->under_object, o->under_vol_id, dxpl_id, req) < 0) {
+        fprintf(stderr, "Failed to close dataset in underlying connectors\n");
+        ret_value = -1;
+        goto done;
+    }
 
     /* Check for async request */
     if (req && *req)
@@ -3008,6 +3043,7 @@ H5VL_bypass_dataset_close(void *dset, hid_t dxpl_id, void **req)
     if (ret_value >= 0)
         H5VL_bypass_free_obj(o);
 
+done:
     return ret_value;
 } /* end H5VL_bypass_dataset_close() */
 
