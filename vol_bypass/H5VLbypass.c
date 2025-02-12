@@ -2559,16 +2559,10 @@ H5VL_bypass_dataset_read(size_t count, void *dset[], hid_t mem_type_id[], hid_t 
     void        *o_arr[count]; /* Array of under objects */
     hid_t        under_vol_id; /* VOL ID for all objects */
     herr_t       ret_value   = 1;
-    haddr_t      dset_loc    = 0;
-    H5D_layout_t dset_layout = -1;
-    hid_t        dset_dtype_id;
-    hid_t        dset_space_id;
     hid_t        file_space_id_copy, mem_space_id_copy;
-    hid_t        dcpl_id    = H5I_INVALID_HID;
     bool      dset_use_native = false;
     dset_t    *dset_info = NULL;
     char       file_name[1024];
-    char       dset_name[1024];
     sel_info_t selection_info;
     int        i, j;
     bool       any_thread_active = false;
@@ -2601,7 +2595,7 @@ H5VL_bypass_dataset_read(size_t count, void *dset[], hid_t mem_type_id[], hid_t 
             goto done;
         }
         
-        read_use_native = dset_use_native || !H5Tequal(dset_dtype_id, mem_type_id[j]); // || !dset_found
+        read_use_native = dset_use_native || !H5Tequal(dset_info->dtype_id, mem_type_id[j]); // || !dset_found
 
         if (read_use_native) {
 
@@ -2630,7 +2624,7 @@ H5VL_bypass_dataset_read(size_t count, void *dset[], hid_t mem_type_id[], hid_t 
             // printf("%s: %d, in bypass VOL\n", __func__, __LINE__);
 
             /* Decide the dataspaces in memory and file */
-            if (check_dspaces_helper(dset_space_id, file_space_id[j], &file_space_id_copy, mem_space_id[j],
+            if (check_dspaces_helper(dset_info->space_id, file_space_id[j], &file_space_id_copy, mem_space_id[j],
                                      &mem_space_id_copy) < 0) {
                 printf("In %s of %s at line %d: can't figure out the data space in file or memory\n",
                        __func__, __FILE__, __LINE__);
@@ -2645,7 +2639,7 @@ H5VL_bypass_dataset_read(size_t count, void *dset[], hid_t mem_type_id[], hid_t 
             pthread_mutex_unlock(&mutex_local);
 
             /* Find out the file name */
-            // get_filename_helper((H5VL_bypass_t *)(dset[j]), file_name, H5I_DATASET, req);
+            get_filename_helper((H5VL_bypass_t *)(dset[j]), file_name, H5I_DATASET, req);
             // fprintf(stderr, "%s at %d: file_name = %s\n", __func__, __LINE__, file_name);
 
             /* Find the correct data file */
@@ -2663,33 +2657,37 @@ H5VL_bypass_dataset_read(size_t count, void *dset[], hid_t mem_type_id[], hid_t 
 
             /* Initialize data selection info */
             strcpy(selection_info.file_name, file_name);
-            strcpy(selection_info.dset_name, dset_name);
+            if (get_dset_name_helper((H5VL_bypass_t *)(dset[j]), selection_info.dset_name, req) < 0) {
+                fprintf(stderr, "failed to retrieve dataset name\n");
+                ret_value = -1;
+                goto done;
+            }
 
-            if ((selection_info.dtype_size = H5Tget_size(dset_dtype_id)) < 0) {
+            if ((selection_info.dtype_size = H5Tget_size(dset_info->dtype_id)) < 0) {
                 printf("In %s of %s at line %d: H5Tget_size failed\n", __func__, __FILE__, __LINE__);
                 ret_value = -1;
                 goto done;
             }
 
-            if (H5D_CHUNKED == dset_layout) {
+            if (H5D_CHUNKED == dset_info->layout) {
                 /* Iterate through all chunks and map the data selection in each chunk to the memory.
                  * Put the selections into a queue for the thread pool to read the data */
                 // process_chunks(buf[j], dset[j], dcpl_id, mem_space_id[j], file_space_id[j],
                 // &selection_info, req);
-                process_chunks(buf[j], dset[j], dcpl_id, mem_space_id_copy, file_space_id_copy,
+                process_chunks(buf[j], dset[j], dset_info->dcpl_id, mem_space_id_copy, file_space_id_copy,
                                &selection_info, req);
             }
-            else if (H5D_CONTIGUOUS == dset_layout) {
+            else if (H5D_CONTIGUOUS == dset_info->layout) {
                 selection_info.file_space_id = file_space_id_copy;
                 selection_info.mem_space_id  = mem_space_id_copy;
 
-                if (dset_loc == HADDR_UNDEF) {
+                if (dset_info->location == HADDR_UNDEF) {
                     fprintf(stderr, "dataset does not have a valid read location\n");
                     ret_value = -1;
                     goto done;
                 }
 
-                selection_info.chunk_addr    = dset_loc;
+                selection_info.chunk_addr    = dset_info->location;
 
                 /* Handles the hyperslab selection and read the data */
                 if (process_vectors(buf[j], &selection_info) < 0) {
@@ -2960,11 +2958,9 @@ static herr_t
 H5VL_bypass_dataset_close(void *dset, hid_t dxpl_id, void **req)
 {
     H5VL_bypass_t *o = (H5VL_bypass_t *)dset;
-    char           dset_name[BYPASS_NAME_SIZE_LONG];
     unsigned       i;
     herr_t         ret_value = 0;
 
-    memset(dset_name, 0, BYPASS_NAME_SIZE_LONG);
     
 #ifdef ENABLE_BYPASS_LOGGING
     printf("------- BYPASS  VOL DATASET Close\n");
@@ -4961,6 +4957,7 @@ get_dset_info(H5VL_bypass_t *dset, dset_t **info_out, hid_t dxpl_id, void** req)
     dset_info->dtype_class = H5T_NO_CLASS;
     dset_info->layout = H5D_LAYOUT_ERROR;
     dset_info->location = HADDR_UNDEF;
+    memset(dset_info->file_name, 0, BYPASS_NAME_SIZE_LONG);
 
     /* Retrieve dataset's DCPL */
     get_args.op_type = H5VL_DATASET_GET_DCPL;
@@ -5050,6 +5047,13 @@ get_dset_info(H5VL_bypass_t *dset, dset_t **info_out, hid_t dxpl_id, void** req)
     /* Retrieve the dataset's number of filters */
     if ((num_filters = H5Pget_nfilters(dset_info->dcpl_id)) < 0) {
         fprintf(stderr, "unable to get dataset's number of filters\n");
+        ret_value = -1;
+        goto done;
+    }
+
+    /* Retrieve parent file name */
+    if (get_filename_helper(dset, dset_info->file_name, H5I_DATASET, req) < 0) {
+        fprintf(stderr, "unable to get dataset's parent file name\n");
         ret_value = -1;
         goto done;
     }

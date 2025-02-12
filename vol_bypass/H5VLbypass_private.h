@@ -71,6 +71,7 @@ static int file_stuff_size = FILE_STUFF_SIZE;
 
 /* Dataset info */
 typedef struct {
+    char file_name[BYPASS_NAME_SIZE_LONG];
     H5D_layout_t layout;
     hid_t dcpl_id;
     hid_t dtype_id;
