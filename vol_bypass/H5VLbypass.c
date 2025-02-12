@@ -5033,7 +5033,8 @@ get_dset_info(H5VL_bypass_t *dset, dset_t **info_out, hid_t dxpl_id, void** req)
         goto done;
     }
 
-    if (dset_info->location == HADDR_UNDEF) {
+    /* For chunked datasets, this field is unused and will return an invalid value when queried */
+    if (dset_info->location == HADDR_UNDEF && dset_info->layout == H5D_CONTIGUOUS) {
         fprintf(stderr, "retrieved invalid dataset address\n");
         ret_value = -1;
         goto done;
