@@ -228,9 +228,9 @@ static herr_t H5VL_bypass_optional(void *obj, H5VL_optional_args_t *args, hid_t 
 /* Check if any threads are still performing or waiting for tasks */
 herr_t is_any_thread_active(bool *out);
 
-static herr_t populate_dset_info(H5VL_bypass_t *dset, dset_t *info_out, hid_t dxpl_id, void** req);
+static herr_t get_dset_info(H5VL_bypass_t *dset, dset_t **info_out, hid_t dxpl_id, void** req);
 
-static herr_t should_use_native(dset_t *dset_info, bool *should_use_native);
+static herr_t should_use_native(const dset_t *dset_info, bool *should_use_native);
 
 static herr_t remove_dset_info_helper(dset_t *dset_info);
 /*******************/
@@ -2551,7 +2551,7 @@ H5VL_bypass_dataset_read(size_t count, void *dset[], hid_t mem_type_id[], hid_t 
     hid_t        file_space_id_copy, mem_space_id_copy;
     hid_t        dcpl_id    = H5I_INVALID_HID;
     bool      dset_use_native = false;
-    dset_t  dset_info;
+    dset_t    *dset_info = NULL;
     char       file_name[1024];
     char       dset_name[1024];
     sel_info_t selection_info;
@@ -2566,17 +2566,8 @@ H5VL_bypass_dataset_read(size_t count, void *dset[], hid_t mem_type_id[], hid_t 
 
     /* Loop through all datasets and process them individually */
     for (j = 0; j < count; j++) {
-        /* Initialize values */
-        dset_info.dcpl_id = H5I_INVALID_HID;
-        dset_info.dtype_id = H5I_INVALID_HID;
-        dset_info.space_id = H5I_INVALID_HID;
-        dset_info.num_filters = 0;
-        dset_info.dtype_class = H5T_NO_CLASS;
-        dset_info.layout = H5D_LAYOUT_ERROR;
-        dset_info.location = HADDR_UNDEF;
-
         /* Retrieve necessary dataset info */
-        if (populate_dset_info((H5VL_bypass_t*) dset[j], &dset_info, plist_id, req) < 0) {
+        if (get_dset_info((H5VL_bypass_t*) dset[j], &dset_info, plist_id, req) < 0) {
             fprintf(stderr, "failed to retrieve dataset information\n");
             ret_value = -1;
             goto done;
@@ -2589,7 +2580,7 @@ H5VL_bypass_dataset_read(size_t count, void *dset[], hid_t mem_type_id[], hid_t 
 
         /* Let the native function handle datatype conversion.  Also check the flag for filters, virtual
          * dataset and reference datatype */
-        if (should_use_native(&dset_info, &dset_use_native) < 0) {
+        if (should_use_native(dset_info, &dset_use_native) < 0) {
             fprintf(stderr, "failed to determine if native function should be used\n");
             ret_value = -1;
             goto done;
@@ -2772,8 +2763,8 @@ H5VL_bypass_dataset_read(size_t count, void *dset[], hid_t mem_type_id[], hid_t 
     assert(thread_task_count == 0);
 
 done:
-    if (ret_value < 0)
-        remove_dset_info_helper(&dset_info);
+    if (ret_value < 0 && dset_info)
+        remove_dset_info_helper(dset_info);
 
     return ret_value;
 } /* end H5VL_bypass_dataset_read() */
@@ -2924,26 +2915,17 @@ remove_dset_info_helper(dset_t *dset_info)
         }
     }
 
-    dset_info->dcpl_id = H5I_INVALID_HID;
-
     if (dset_info->dtype_id > 0 && H5Tclose(dset_info->dtype_id) < 0) {
         fprintf(stderr, "failed to close dtype\n");
         ret_value = -1;
     }
-
-    dset_info->dtype_id = H5I_INVALID_HID;
 
     if (dset_info->space_id > 0 && H5Sclose(dset_info->space_id) < 0) {
         fprintf(stderr, "failed to close dataspace\n");
         ret_value = -1;
     }
 
-    dset_info->space_id = H5I_INVALID_HID;
-
-    dset_info->layout = H5D_LAYOUT_ERROR;
-    dset_info->num_filters = -1;
-    dset_info->dtype_class = H5T_NO_CLASS;
-    dset_info->location = HADDR_UNDEF;
+    free(dset_info);
 
 done:
     return ret_value;
@@ -4937,7 +4919,7 @@ done:
 }
 
 static herr_t
-populate_dset_info(H5VL_bypass_t *dset, dset_t *info_out, hid_t dxpl_id, void** req) {
+get_dset_info(H5VL_bypass_t *dset, dset_t **info_out, hid_t dxpl_id, void** req) {
     herr_t ret_value = 0;
     H5VL_dataset_get_args_t get_args;
     hid_t dcpl_id = H5I_INVALID_HID;
@@ -4945,18 +4927,25 @@ populate_dset_info(H5VL_bypass_t *dset, dset_t *info_out, hid_t dxpl_id, void** 
     H5VL_optional_args_t opt_args;
     int num_filters = 0;
     H5T_class_t dtype_class;
+    dset_t *dset_info = NULL;
 
     assert(dset);
     assert(info_out);
 
+    if ((dset_info = malloc(sizeof(dset_t))) == NULL) {
+        fprintf(stderr, "can't allocate space for dataset info\n");
+        ret_value = -1;
+        goto done;
+    }
+
     /* Initialize values */
-    info_out->dcpl_id = H5I_INVALID_HID;
-    info_out->dtype_id = H5I_INVALID_HID;
-    info_out->space_id = H5I_INVALID_HID;
-    info_out->num_filters = 0;
-    info_out->dtype_class = H5T_NO_CLASS;
-    info_out->layout = H5D_LAYOUT_ERROR;
-    info_out->location = HADDR_UNDEF;
+    dset_info->dcpl_id = H5I_INVALID_HID;
+    dset_info->dtype_id = H5I_INVALID_HID;
+    dset_info->space_id = H5I_INVALID_HID;
+    dset_info->num_filters = 0;
+    dset_info->dtype_class = H5T_NO_CLASS;
+    dset_info->layout = H5D_LAYOUT_ERROR;
+    dset_info->location = HADDR_UNDEF;
 
     /* Retrieve dataset's DCPL */
     get_args.op_type = H5VL_DATASET_GET_DCPL;
@@ -4974,10 +4963,10 @@ populate_dset_info(H5VL_bypass_t *dset, dset_t *info_out, hid_t dxpl_id, void** 
         goto done;
     }
 
-    info_out->dcpl_id = get_args.args.get_dcpl.dcpl_id;
+    dset_info->dcpl_id = get_args.args.get_dcpl.dcpl_id;
 
     /* Retrieve layout */
-    if ((info_out->layout = H5Pget_layout(info_out->dcpl_id)) < 0) {
+    if ((dset_info->layout = H5Pget_layout(dset_info->dcpl_id)) < 0) {
         fprintf(stderr, "unable to get dataset's layout\n");
         ret_value = -1;
         goto done;
@@ -4999,7 +4988,7 @@ populate_dset_info(H5VL_bypass_t *dset, dset_t *info_out, hid_t dxpl_id, void** 
         goto done;
     }
 
-    info_out->dtype_id = get_args.args.get_type.type_id;
+    dset_info->dtype_id = get_args.args.get_type.type_id;
 
     /* Retrieve the dataset's dataspace */
     get_args.op_type = H5VL_DATASET_GET_SPACE;
@@ -5017,10 +5006,10 @@ populate_dset_info(H5VL_bypass_t *dset, dset_t *info_out, hid_t dxpl_id, void** 
         goto done;
     }
 
-    info_out->space_id = get_args.args.get_space.space_id;
+    dset_info->space_id = get_args.args.get_space.space_id;
 
     /* Retrieve the dataset's location */
-    dset_opt_args.get_offset.offset = &(info_out->location);
+    dset_opt_args.get_offset.offset = &(dset_info->location);
     opt_args.op_type = H5VL_NATIVE_DATASET_GET_OFFSET;
     opt_args.args = &dset_opt_args;
 
@@ -5030,50 +5019,38 @@ populate_dset_info(H5VL_bypass_t *dset, dset_t *info_out, hid_t dxpl_id, void** 
         goto done;
     }
 
-    if (info_out->location == HADDR_UNDEF) {
+    if (dset_info->location == HADDR_UNDEF) {
         fprintf(stderr, "retrieved invalid dataset address\n");
         ret_value = -1;
         goto done;
     }
 
     /* Retrieve the dataset's datatype class */
-    if ((info_out->dtype_class = H5Tget_class(info_out->dtype_id)) < 0) {
+    if ((dset_info->dtype_class = H5Tget_class(dset_info->dtype_id)) < 0) {
         fprintf(stderr, "unable to get dataset's datatype class\n");
         ret_value = -1;
         goto done;
     }
 
     /* Retrieve the dataset's number of filters */
-    if ((num_filters = H5Pget_nfilters(info_out->dcpl_id)) < 0) {
+    if ((num_filters = H5Pget_nfilters(dset_info->dcpl_id)) < 0) {
         fprintf(stderr, "unable to get dataset's number of filters\n");
         ret_value = -1;
         goto done;
     }
 
 done:
-    if (ret_value < 0) {
-        H5E_BEGIN_TRY {
-            if (info_out->dcpl_id != H5I_INVALID_HID) {
-                H5Pclose(info_out->dcpl_id);
-                info_out->dcpl_id = H5I_INVALID_HID;
-            }
-
-            if (info_out->dtype_id != H5I_INVALID_HID) {
-                H5Tclose(info_out->dtype_id);
-                info_out->dtype_id = H5I_INVALID_HID;
-            }
-
-            if (info_out->space_id != H5I_INVALID_HID) {
-                H5Sclose(info_out->space_id);
-                info_out->space_id = H5I_INVALID_HID;
-            }
-        } H5E_END_TRY;
+    if (ret_value < 0 && dset_info) {
+        remove_dset_info_helper(dset_info);
+    } else {
+        *info_out = dset_info;
     }
+
     return ret_value;
 }
 
 static herr_t
-should_use_native(dset_t *dset_info, bool *should_use_native) {
+should_use_native(const dset_t *dset_info, bool *should_use_native) {
     herr_t ret_value = 0;
 
     assert(dset_info);
