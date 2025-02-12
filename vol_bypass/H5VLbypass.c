@@ -2727,6 +2727,8 @@ H5VL_bypass_dataset_read(size_t count, void *dset[], hid_t mem_type_id[], hid_t 
             }
         }
 
+        remove_dset_info_helper(dset_info);
+        dset_info = NULL;
     }
 
     /* Check for async request */
