@@ -2916,22 +2916,24 @@ remove_dset_info_helper(dset_t *dset_info)
 
     assert(dset_info);
 
-    /* First, close the IDs related to the dataset */
-    if (H5Pclose(dset_info->dcpl_id) < 0) {
-        fprintf(stderr, "failed to close DCPL\n");
-        ret_value = -1;
+    /* First, close the IDs related to the dataset if it is non-default */
+    if (dset_info->dcpl_id > 0 && dset_info->dcpl_id != H5P_DATASET_CREATE) {
+        if (H5Pclose(dset_info->dcpl_id) < 0) {
+            fprintf(stderr, "failed to close DCPL\n");
+            ret_value = -1;
+        }
     }
 
     dset_info->dcpl_id = H5I_INVALID_HID;
 
-    if (H5Tclose(dset_info->dtype_id) < 0) {
+    if (dset_info->dtype_id > 0 && H5Tclose(dset_info->dtype_id) < 0) {
         fprintf(stderr, "failed to close dtype\n");
         ret_value = -1;
     }
 
     dset_info->dtype_id = H5I_INVALID_HID;
 
-    if (H5Sclose(dset_info->space_id) < 0) {
+    if (dset_info->space_id > 0 && H5Sclose(dset_info->space_id) < 0) {
         fprintf(stderr, "failed to close dataspace\n");
         ret_value = -1;
     }
@@ -4934,8 +4936,6 @@ done:
     return ret_value;
 }
 
-// TBD: Should replicate the information implicitly gained by not inserting
-// some dsets into dset table
 static herr_t
 populate_dset_info(H5VL_bypass_t *dset, dset_t *info_out, hid_t dxpl_id, void** req) {
     herr_t ret_value = 0;
@@ -5053,12 +5053,20 @@ populate_dset_info(H5VL_bypass_t *dset, dset_t *info_out, hid_t dxpl_id, void** 
 done:
     if (ret_value < 0) {
         H5E_BEGIN_TRY {
-            if (info_out->dcpl_id != H5I_INVALID_HID)
+            if (info_out->dcpl_id != H5I_INVALID_HID) {
                 H5Pclose(info_out->dcpl_id);
-            if (info_out->dtype_id != H5I_INVALID_HID)
+                info_out->dcpl_id = H5I_INVALID_HID;
+            }
+
+            if (info_out->dtype_id != H5I_INVALID_HID) {
                 H5Tclose(info_out->dtype_id);
-            if (info_out->space_id != H5I_INVALID_HID)
+                info_out->dtype_id = H5I_INVALID_HID;
+            }
+
+            if (info_out->space_id != H5I_INVALID_HID) {
                 H5Sclose(info_out->space_id);
+                info_out->space_id = H5I_INVALID_HID;
+            }
         } H5E_END_TRY;
     }
     return ret_value;
