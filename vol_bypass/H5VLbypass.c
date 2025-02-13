@@ -2481,18 +2481,22 @@ H5VL_bypass_dataset_read(size_t count, void *dset[], hid_t mem_type_id[], hid_t 
             // fprintf(stderr, "%s at %d: file_name = %s\n", __func__, __LINE__, file_name);
 
             /* Find the correct data file */
+            selection_info.my_file_index = -1;
+            
             for (i = 0; i < file_stuff_count; i++) {
-                if (!strcmp(file_stuff[i].name, file_name))
+                if (!strcmp(file_stuff[i].name, file_name)) {
                     selection_info.my_file_index =
                         i; /* Save this index in the list of FILE_T structures for quick lookup later */
-                else {
-                    printf("In %s of %s at line %d: can't find the file with the name %s\n", __func__,
-                           __FILE__, __LINE__, file_name);
-                    ret_value = -1;
-                    goto done;
+                    break;
                 }
             }
 
+            if (selection_info.my_file_index < 0) {
+                printf("In %s of %s at line %d: can't find the file with the name %s\n", __func__, __FILE__,
+                __LINE__, file_name);
+                ret_value = -1;
+                goto done;
+            }
             /* Initialize data selection info */
             strcpy(selection_info.file_name, file_name);
             if (get_dset_name_helper((H5VL_bypass_t *)(dset[j]), selection_info.dset_name, req) < 0) {
