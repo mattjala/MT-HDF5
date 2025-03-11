@@ -100,6 +100,10 @@ typedef struct Bypass_dataset_t {
     struct H5VL_bypass_t *file;  /* Use the forward-declared type */
 } Bypass_dataset_t;
 
+typedef struct Bypass_group_t {
+    struct H5VL_bypass_t *file; /* File containing the group */
+} Bypass_group_t;
+
 /* The bypass VOL connector's object */
 typedef struct H5VL_bypass_t {
     hid_t under_vol_id; /* ID for underlying VOL connector */
@@ -107,9 +111,9 @@ typedef struct H5VL_bypass_t {
     H5I_type_t type; /* Type of this object. */
 
     union {
-        /* Only dataset objects are needed for now */
         Bypass_dataset_t dataset;
         Bypass_file_t file;
+        Bypass_group_t group;
     } u;
 } H5VL_bypass_t;
 
