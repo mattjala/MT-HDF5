@@ -141,7 +141,7 @@ typedef struct {
 typedef struct {
     size_t  counter;
 
-    char    dset_name[64];
+    char    dset_name[BYPASS_NAME_SIZE_LONG];
 
     hid_t   file_space_id;
     hid_t   mem_space_id;

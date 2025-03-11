@@ -490,6 +490,7 @@ H5VL_bypass_free_obj(H5VL_bypass_t *obj)
                 ret_value = -1;
                 goto done;
             }
+            break;
         }
         default: {
             break;
@@ -1616,7 +1617,7 @@ H5VL_bypass_dataset_open(void *obj, const H5VL_loc_params_t *loc_params, const c
     }
 
     assert(parent_file->type == H5I_FILE);
-    assert(o->u.file.ref_count > 0);
+    assert(parent_file->u.file.ref_count > 0);
     
     parent_file->u.file.ref_count++;
     dset->u.dataset.file = parent_file;
@@ -2626,6 +2627,7 @@ H5VL_bypass_dataset_read(size_t count, void *dset[], hid_t mem_type_id[], hid_t 
         }
 
         bypass_dset = (Bypass_dataset_t*)&bypass_obj->u.dataset;
+        assert(bypass_dset->file->u.file.name);
         // printf("\n%s: %d, count=%lu, dset_name = %s, file_name = %s, dtype_id = %llu, H5T_STD_REF_DSETREG =
         // %llu, H5T_NATIVE_INT = %llu, dcpl_id = %llu, H5I_INVALID_HID = %d\n", __func__, __LINE__, count,
         // dset_name, file_name, dset_dtype_id, H5T_STD_REF_DSETREG, H5T_NATIVE_INT, dcpl_id,
@@ -3401,7 +3403,6 @@ H5VL_bypass_file_create(const char *name, unsigned flags, hid_t fcpl_id, hid_t f
     
     info = NULL;
 
-
     file->type = H5I_FILE;
 
     if (c_file_open_helper(file, name) < 0) {
@@ -3560,11 +3561,13 @@ H5VL_bypass_file_specific(void *file, H5VL_file_specific_args_t *args, hid_t dxp
     H5VL_file_specific_args_t *new_args;
     H5VL_bypass_info_t        *info;
     hid_t                      under_vol_id = -1;
-    herr_t                     ret_value;
+    herr_t                     ret_value = 0;
 
 #ifdef ENABLE_BYPASS_LOGGING
     printf("------- BYPASS  VOL FILE Specific\n");
 #endif
+
+    assert(o == NULL || o->type == H5I_FILE);
 
     /* Check for 'is accessible' operation */
     if (args->op_type == H5VL_FILE_IS_ACCESSIBLE) {
@@ -3659,11 +3662,29 @@ H5VL_bypass_file_specific(void *file, H5VL_file_specific_args_t *args, hid_t dxp
     } /* end else-if */
     else if (args->op_type == H5VL_FILE_REOPEN) {
         /* Wrap reopened file struct pointer, if we reopened one */
-        if (ret_value >= 0 && args->args.reopen.file)
-            *args->args.reopen.file = H5VL_bypass_new_obj(*args->args.reopen.file, o->under_vol_id);
+        if (args->args.reopen.file) {
+            new_o = H5VL_bypass_new_obj(*args->args.reopen.file, o->under_vol_id);
+            new_o->type = H5I_FILE;
+
+            *args->args.reopen.file = new_o;
+
+            assert(o->u.file.name);
+
+            if (c_file_open_helper(new_o, o->u.file.name) < 0) {
+                fprintf(stderr, "error while opening c file\n");
+                goto error;
+            }
+
+        }
     } /* end else */
 
     return ret_value;
+
+error:
+    if (new_o)
+        H5VL_bypass_free_obj(new_o);
+
+    return -1;
 } /* end H5VL_bypass_file_specific() */
 
 /*-------------------------------------------------------------------------
@@ -4283,15 +4304,27 @@ H5VL_bypass_object_open(void *obj, const H5VL_loc_params_t *loc_params, H5I_type
 
     new_obj->type = *opened_type;
 
-    /* If the object is a dataset, populate the underlying bypass object */
-    
-    if (new_obj->type == H5I_DATASET) {
-        if (dset_open_helper(new_obj, dxpl_id, req) < 0) {
-            fprintf(stderr, "failed to populate bypass object\n");
-            goto error;
+    switch (new_obj->type) {
+        case H5I_DATASET: {
+            if (dset_open_helper(new_obj, dxpl_id, req) < 0) {
+                fprintf(stderr, "failed to populate bypass object\n");
+                goto error;
+            }
+
+            o->u.file.ref_count++;
+            new_obj->u.dataset.file = o;
+            break;
+        }
+        
+        case H5I_GROUP: {
+            o->u.file.ref_count++;
+            new_obj->u.group.file = o;
+            break;
         }
 
-        new_obj->u.dataset.file = o;
+        default: {
+            break;
+        }
     }
         
     /* Check for async request */
