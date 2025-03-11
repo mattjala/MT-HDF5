@@ -426,7 +426,10 @@ H5VL_bypass_new_obj(void *under_obj, hid_t under_vol_id)
     new_obj->under_vol_id = under_vol_id;
     new_obj->type = H5I_BADID;
 
-    H5Iinc_ref(new_obj->under_vol_id);
+    if (H5Iinc_ref(new_obj->under_vol_id) < 0) {
+        fprintf(stderr, "unable to increment ref count of underlying VOL object\n");
+        return NULL;
+    }
 
     return new_obj;
 } /* end H5VL_bypass_obj() */
@@ -1601,7 +1604,7 @@ H5VL_bypass_dataset_open(void *obj, const H5VL_loc_params_t *loc_params, const c
         goto error;
     }
 
-    if ((dset = H5VL_bypass_new_obj(under, o->under_vol_id)) < 0) {
+    if ((dset = H5VL_bypass_new_obj(under, o->under_vol_id)) == NULL) {
         fprintf(stderr, "failed to create bypass object\n");
         goto error;
     }
@@ -2036,6 +2039,9 @@ start_thread_for_pool(void *args)
                 pthread_cond_signal(&(files_local[i]->u.file.close_ready));
             }
 
+            /* Release this task's reference to the file */
+            files_local[i]->u.file.ref_count--;
+
             if (pthread_mutex_unlock(&mutex_local) != 0) {
                 fprintf(stderr, "failed to unlock mutex\n");
                 ret_value = (void*) -1;
@@ -2293,6 +2299,7 @@ process_vectors(void *rbuf, sel_info_t *selection_info)
         }
 
         /* Add this segment to vector read list */
+        selection_info->file->u.file.ref_count++;
         md_for_thread.files[md_for_thread.vec_arr_nused] = selection_info->file;
         md_for_thread.addrs[md_for_thread.vec_arr_nused] =
             selection_info->chunk_addr + file_off[file_seq_i]; /* Add the base offset of the dataset to the
@@ -2595,6 +2602,7 @@ H5VL_bypass_dataset_read(size_t count, void *dset[], hid_t mem_type_id[], hid_t 
     bool       any_thread_active = false;
     bool       read_use_native   = false;
     bool       external_link_access = false;
+    bool       file_rc_increased = false;
     H5S_sel_type mem_sel_type = H5S_SEL_ERROR;
     H5S_sel_type file_sel_type = H5S_SEL_ERROR;
     bool types_equal = false;
@@ -2643,7 +2651,10 @@ H5VL_bypass_dataset_read(size_t count, void *dset[], hid_t mem_type_id[], hid_t 
             goto done;
         }
 
+        bypass_dset->file->u.file.ref_count++;
         selection_info.file = bypass_dset->file;
+        /* Track RC status to allow for error handling */
+        file_rc_increased = true;
 
         // fprintf(stderr, "%s at %d: file_name = %s\n", __func__, __LINE__, file_name);
         if ((num_ext_files = H5Pget_external_count(bypass_dset->dcpl_id)) < 0) {
@@ -2807,6 +2818,9 @@ H5VL_bypass_dataset_read(size_t count, void *dset[], hid_t mem_type_id[], hid_t 
             }
         }
 
+        /* Selection info is finished with the file */
+        bypass_dset->file->u.file.ref_count--;
+        file_rc_increased = false;
     }
 
     /* Check for async request */
@@ -2862,7 +2876,10 @@ H5VL_bypass_dataset_read(size_t count, void *dset[], hid_t mem_type_id[], hid_t 
     assert(thread_task_count == 0);
 
 done:
-
+    if (ret_value < 0) {
+        if (file_rc_increased && bypass_dset)
+            bypass_dset->file->u.file.ref_count--;
+    }
     return ret_value;
 } /* end H5VL_bypass_dataset_read() */
 
@@ -3380,14 +3397,14 @@ H5VL_bypass_file_create(const char *name, unsigned flags, hid_t fcpl_id, hid_t f
         goto error;
     }
 
-    if ((file = H5VL_bypass_new_obj(under, info->under_vol_id)) < 0) {
+    if ((file = H5VL_bypass_new_obj(under, info->under_vol_id)) == NULL) {
         fprintf(stderr, "error while creating bypass file object\n");
         goto error;
     }
 
     /* Check for async request */
     if (req && *req)
-        if ((*req = H5VL_bypass_new_obj(*req, info->under_vol_id)) < 0) {
+        if ((*req = H5VL_bypass_new_obj(*req, info->under_vol_id)) == NULL) {
             fprintf(stderr, "error while creating bypass async request\n");
             goto error;
         }
@@ -3492,7 +3509,10 @@ H5VL_bypass_file_open(const char *name, unsigned flags, hid_t fapl_id, hid_t dxp
     }
 
     
-    file = H5VL_bypass_new_obj(under, info->under_vol_id);
+    if ((file = H5VL_bypass_new_obj(under, info->under_vol_id)) == NULL) {
+        fprintf(stderr, "error while creating bypass file object\n");
+        goto error;
+    }
 
     /* Check for async request */
     if (req && *req)
